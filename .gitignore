@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+KownledgeBase/手册/插图/
+prepare_repo.py

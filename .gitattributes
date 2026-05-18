@@ -1,0 +1,2 @@
+vector_index.pkl filter=lfs diff=lfs merge=lfs -text
+KownledgeBase/手册/插图.zip filter=lfs diff=lfs merge=lfs -text
