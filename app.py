@@ -66,14 +66,21 @@ app = FastAPI(
 agent = ConversationalAgent()
 
 def verify_token(authorization: Optional[str] = Header(None)):
+    logger.info(f"Received Authorization header: {authorization}")
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing Authorization Header")
-    parts = authorization.split(" ")
-    if len(parts) != 2 or parts[0].lower() != "bearer":
+    
+    # 兼容部分代理网关拼接或重写 Token 的情况（例如逗号分隔或多重 Bearer）
+    # 只要 authorization 包含 "bearer" (不区分大小写) 且包含我们的 KAFU_API_TOKEN，即判定为合法合法
+    if "bearer" not in authorization.lower():
         raise HTTPException(status_code=401, detail="Invalid Authorization Format. Expected 'Bearer <token>'")
-    if parts[1] != KAFU_API_TOKEN:
+    
+    if KAFU_API_TOKEN not in authorization:
         raise HTTPException(status_code=401, detail="Invalid API Token")
-    return parts[1]
+        
+    # 提取提取出实际的 token，优先返回 KAFU_API_TOKEN
+    return KAFU_API_TOKEN
+
 
 # 1. 声明 Pydantic 校验模型 (完全对齐赛方要求)
 class ChatRequest(BaseModel):
