@@ -32,10 +32,14 @@ logger = logging.getLogger(__name__)
 file_write_lock = threading.Lock()
 
 class BatchEvaluator:
-    def __init__(self, workspace_dir: str = "d:\\Desktop\\数据", max_workers: int = 3):
+    def __init__(self, workspace_dir: str = None, max_workers: int = 3):
         """
         初始化测评模块。
         """
+        if workspace_dir is None:
+            # 自动匹配当前脚本所在的文件夹以防路径错乱
+            workspace_dir = os.path.dirname(os.path.abspath(__file__))
+            
         self.workspace_dir = workspace_dir
         self.question_path = os.path.join(workspace_dir, "question_public.csv")
         self.temp_output_path = os.path.join(workspace_dir, "submission_in_progress.csv")
@@ -91,12 +95,19 @@ class BatchEvaluator:
             # 调用 RAG 智能体（在批量评测中，多轮对话历史为空）
             answer = self.agent.ask(clean_question)
             
+            # 针对比赛提炼清洁回答：完整保留多模态图片 JSON 数组和兜底提示句式，不进行过滤
+            clean_ans = answer
+            # import re
+            # clean_ans = re.sub(r',\s*\[\s*"[^"]+"\s*(?:,\s*"[^"]+"\s*)*\]\s*$', '', clean_ans)
+            # clean_ans = re.sub(r'\s*Please refer to the following related illustrations:\s*<PIC>\s*$', '', clean_ans)
+            # clean_ans = re.sub(r'\s*请参考以下相关插图：\s*<PIC>\s*$', '', clean_ans)
+            
             # 将生成的答案进行单行安全化清洗（防止写 CSV 破坏格式，但保留正常换行转义）
             # 注意：赛题要求输出的单行格式，我们可以直接用 \n 字符串表示折行，或者直接输出含正常换行的内容，
             # 采用 CSV 写入时，多行字符串会被自动用双引号括起来保护，完全不用担心。
             
             # 写入临时进度文件以支持断点恢复
-            self._write_row_to_temp(q_id, answer)
+            self._write_row_to_temp(q_id, clean_ans)
             
             # 更新进度条
             progress_bar.update(1)
@@ -115,7 +126,7 @@ class BatchEvaluator:
             logger.error(f"公共测评集文件 {self.question_path} 不存在！请检查路径。")
             return
             
-        df_questions = pd.read_csv(self.question_path)
+        df_questions = pd.read_csv(self.question_path, encoding='utf-8')
         total_questions = len(df_questions)
         logger.info(f"成功载入公共测试集，共找到 {total_questions} 道待解答题目。")
 
@@ -172,10 +183,28 @@ class BatchEvaluator:
             # 重命名列名，确保完全契合 submission_example.csv 的 ['id', 'ret'] 标准
             df_temp.columns = ["id", "ret"]
             
+            # 进行安全性与格式清洗：
+            # 1. 移除非 BMP 字符（如 Emoji 😔, 😊 等，以避免编码解析时报错）
+            # 2. 将所有实际的换行符 (\r\n 或 \n) 统一替换为字面量的 '\\n' 字符串，以确保每条记录在 CSV 中只占一行，防止破坏行式解析器结构
+            cleaned_rets = []
+            for val in df_temp["ret"]:
+                val_str = str(val)
+                # 去除表情符号等 4 字节的 UTF-8 字符（code point > 0xFFFF）
+                val_clean = "".join(c for c in val_str if ord(c) <= 0xffff)
+                # 换行符替换为字面量 \n
+                val_single_line = val_clean.replace('\r\n', '\\n').replace('\n', '\\n')
+                cleaned_rets.append(val_single_line)
+            df_temp["ret"] = cleaned_rets
+            
             # 保存到最终路径
             df_temp.to_csv(self.final_output_path, index=False, encoding='utf-8')
             
-            logger.info(f"🎉 成功生成 100% 合规的最终提交文件：{self.final_output_path}！")
+            # 额外生成一个带 BOM 的版本（供部分严格要求 Excel 或带有特定 Windows-GBK 解码器的评测系统备用）
+            extra_bom_path = self.final_output_path.replace(".csv", "_utf8_sig.csv")
+            df_temp.to_csv(extra_bom_path, index=False, encoding='utf-8-sig')
+            
+            logger.info(f"🎉 成功生成 100% 合规的最终提交文件：{self.final_output_path} (行数: {len(df_temp) + 1})！")
+            logger.info(f"同时生成了 UTF-8 with BOM 备用格式：{extra_bom_path}")
             logger.info(f"生成文件摘要：共解答 {len(df_temp)} 行题目。首尾 ID 为 {df_temp['id'].iloc[0]} 到 {df_temp['id'].iloc[-1]}。")
             
             # 清理临时进度文件（可选，建议保留以供审核）
@@ -187,6 +216,11 @@ if __name__ == "__main__":
     # 在批量评测中，必须确保 UTF-8 运行环境
     os.environ["PYTHONUTF8"] = "1"
     
-    # 实例化并运行测评。并发线程数设置为 1，以防触发 Qwen API 的 429 限频限制
-    evaluator = BatchEvaluator(max_workers=1)
+    from graph import USE_LOCAL_MODEL
+    # 若启用本地大模型，为保障 Ollama 并发稳定性与显存安全，使用单线程跑完评测；若为云端接口，可 15 线程并发
+    workers = 1 if USE_LOCAL_MODEL else 15
+    logger.info(f"RAG 评估配置：本地模型离线版={USE_LOCAL_MODEL}，并发线程数={workers}")
+    
+    # 实例化并运行测评。并发线程数根据配置自适应调整
+    evaluator = BatchEvaluator(max_workers=workers)
     evaluator.run()

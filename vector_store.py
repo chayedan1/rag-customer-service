@@ -28,109 +28,100 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ========================================================================
-# 阿里云 DashScope 云端向量配置
+# 本地向量模型配置 (sentence-transformers)
 # ========================================================================
-DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "sk-c3cc13b82c0745b5adef7220aeec18c4")
-DASHSCOPE_EMBED_MODEL = "text-embedding-v4"
+LOCAL_EMBED_MODEL = "BAAI/bge-small-zh-v1.5"
+EMBED_DIM = 512  # bge-small-zh-v1.5 输出维度
 
 
 class LocalVectorStore:
     def __init__(self, workspace_dir: str = None):
         """
         初始化向量数据库，定义索引路径 and 数据源路径。
-        采用阿里云云端最新高精度 text-embedding-v4 模型，本地无需安装部署任何大模型。
+        采用本地 BAAI/bge-small-zh-v1.5 模型，无需网络请求。
         """
         if workspace_dir is None:
             # 优先采用相对路径定位以支持跨平台部署
             current_dir = os.path.dirname(os.path.abspath(__file__))
             if os.path.exists(os.path.join(current_dir, "vector_index.pkl")):
                 workspace_dir = current_dir
+            elif os.path.exists(os.path.join(current_dir, "KownledgeBase")):
+                workspace_dir = current_dir
+            elif os.path.exists(os.path.join(os.path.dirname(current_dir), "KownledgeBase")):
+                workspace_dir = os.path.dirname(current_dir)
             else:
                 workspace_dir = "d:\\Desktop\\数据"
-                
+
         self.workspace_dir = workspace_dir
         self.output_json_path = os.path.join(workspace_dir, "knowledge_processed.json")
         self.index_path = os.path.join(workspace_dir, "vector_index.pkl")
-        
+
         # 核心存储容器
         self.chunks: List[Dict[str, Any]] = []          # 原始文本块元数据
         self.embeddings_matrix: np.ndarray = None       # 向量矩阵，形状为 (N, Dimension)
         self.bm25_index = None                          # BM25 关键词索引（混合检索专用）
         self.tokenized_corpus: List[List[str]] = []     # BM25 分词后语料
-        
-        logger.info(f"向量模型已配置为阿里云云端【{DASHSCOPE_EMBED_MODEL}】，拥有全新 100 万 tokens 免费额度！")
+        self._model = None                              # 延迟加载的本地向量模型
+
+        logger.info(f"向量模型已配置为本地【{LOCAL_EMBED_MODEL}】，维度={EMBED_DIM}，无需网络请求。")
+
+    def _get_model(self):
+        """延迟加载本地向量模型"""
+        if self._model is None:
+            from sentence_transformers import SentenceTransformer
+            logger.info(f"正在加载本地向量模型 {LOCAL_EMBED_MODEL}...")
+            self._model = SentenceTransformer(LOCAL_EMBED_MODEL)
+            logger.info("本地向量模型加载完成。")
+        return self._model
 
     # ====================================================================
-    # 向量嵌入：调用阿里云 DashScope REST API 接口 (批量并行化)
+    # 向量嵌入：本地 sentence-transformers 模型
     # ====================================================================
     EMBED_MAX_CHARS = 2000  # 单条安全上限
 
     def get_embedding(self, texts: List[str]) -> List[List[float]]:
         """
-        使用阿里云 DashScope text-embedding-v4 模型，通过 Batching (批处理) 形式批量生成文本向量。
+        使用本地 BGE 模型批量生成文本向量，无需网络请求。
         """
-        all_embs = []
-        headers = {
-            "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        # 按 batch_size = 10 进行分批批量请求，大幅降低网络开销，提高请求效率 10 倍以上
-        batch_size = 10
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
-            # 过滤/截断处理文本
-            safe_batch = [t[:self.EMBED_MAX_CHARS] if len(t) > self.EMBED_MAX_CHARS else t for t in batch]
-            try:
-                resp = requests.post(
-                    "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings",
-                    headers=headers,
-                    json={
-                        "model": DASHSCOPE_EMBED_MODEL,
-                        "input": safe_batch
-                    },
-                    timeout=60
-                )
-                resp.raise_for_status()
-                res_data = resp.json()
-                # 按照 index 顺序排序，确保输出与输入序列 100% 一致
-                sorted_embs = sorted(res_data["data"], key=lambda x: x["index"])
-                for item in sorted_embs:
-                    all_embs.append(item["embedding"])
-            except Exception as e:
-                logger.error(f"DashScope 批量向量生成异常: {str(e)}。正在启动单条逐个降级解析模式...")
-                # 逐条重试降级容错机制（防止因某一条含有不可见或特殊字符导致整批失败）
-                for t in safe_batch:
-                    try:
-                        resp = requests.post(
-                            "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings",
-                            headers=headers,
-                            json={
-                                "model": DASHSCOPE_EMBED_MODEL,
-                                "input": [t[:1500]]  # 缩短长度重试
-                            },
-                            timeout=30
-                        )
-                        resp.raise_for_status()
-                        all_embs.append(resp.json()["data"][0]["embedding"])
-                    except Exception as e2:
-                        logger.error(f"单条向量获取依然失败: {str(e2)}。填入兜底零向量以防崩溃。")
-                        all_embs.append([0.0] * 1024)  # text-embedding-v4 默认输出维度是 1024
-        return all_embs
+        model = self._get_model()
+        safe_texts = [t[:self.EMBED_MAX_CHARS] if len(t) > self.EMBED_MAX_CHARS else t for t in texts]
+        try:
+            embeddings = model.encode(safe_texts, normalize_embeddings=True, show_progress_bar=False)
+            return embeddings.tolist()
+        except Exception as e:
+            logger.error(f"本地向量模型生成异常: {str(e)}。正在逐条降级...")
+            all_embs = []
+            for t in safe_texts:
+                try:
+                    emb = model.encode([t[:1500]], normalize_embeddings=True, show_progress_bar=False)
+                    all_embs.append(emb[0].tolist())
+                except Exception as e2:
+                    logger.error(f"单条向量获取依然失败: {str(e2)}。填入兜底零向量。")
+                    all_embs.append([0.0] * EMBED_DIM)
+            return all_embs
 
     # ====================================================================
-    # BM25 分词工具：对中英文混合文本进行轻量级分词
+    # BM25 分词工具：对中英文混合文本进行分词（jieba 中文 + 英文单词）
     # ====================================================================
     @staticmethod
     def _tokenize(text: str) -> List[str]:
         """
         对文本进行中英文混合分词。
-        - 中文：按单字符切分（简单高效，无需 jieba 依赖）
+        - 中文：jieba 搜索引擎模式分词，保留多字词组
         - 英文：按空格和标点切分为单词
-        所有 token 统一转小写，过滤空串 and 纯标点。
+        所有 token 统一转小写，过滤空串和纯标点。
         """
         # 提取所有中文字符和英文单词
-        tokens = re.findall(r'[\u4e00-\u9fff]|[a-zA-Z0-9]+', text.lower())
+        import jieba
+        # jieba 搜索引擎模式分词（额外拆出短词，提高召回率）
+        jieba_words = list(jieba.cut_for_search(text.lower()))
+        tokens = []
+        for w in jieba_words:
+            w = w.strip()
+            if not w:
+                continue
+            if re.match(r'[一-鿿]+|[a-zA-Z0-9]+', w):
+                tokens.append(w)
         return tokens
 
     # ====================================================================
@@ -160,16 +151,16 @@ class LocalVectorStore:
             texts_to_embed.append(combined_text)
 
         total_chunks = len(texts_to_embed)
-        logger.info(f"正在通过阿里云云端 [{DASHSCOPE_EMBED_MODEL}] 批量并行化提取 {total_chunks} 个文本分块的特征向量...")
+        logger.info(f"正在通过本地模型 [{LOCAL_EMBED_MODEL}] 批量提取 {total_chunks} 个文本分块的特征向量...")
         
-        # 分批处理并在外层使用大批量显示进度
-        step_size = 100
+        # 分批处理，本地模型可以处理较大批次
+        step_size = 256
         all_embeddings = []
         for i in range(0, total_chunks, step_size):
             batch = texts_to_embed[i:i + step_size]
             batch_embs = self.get_embedding(batch)
             all_embeddings.extend(batch_embs)
-            logger.info(f"  云端向量提取进度: {min(i + step_size, total_chunks)}/{total_chunks}")
+            logger.info(f"  本地向量提取进度: {min(i + step_size, total_chunks)}/{total_chunks}")
 
         # 将生成的向量转化为 NumPy 矩阵，并进行 L2 范数归一化
         emb_matrix = np.array(all_embeddings, dtype=np.float32)
@@ -210,9 +201,9 @@ class LocalVectorStore:
                 self.chunks = data["chunks"]
                 self.embeddings_matrix = data["embeddings_matrix"]
                 
-                # 检查向量维度是否与当前的 text-embedding-v4 (1024维) 匹配
-                if self.embeddings_matrix is not None and self.embeddings_matrix.shape[1] != 1024:
-                    logger.warning(f"检测到缓存的向量维度为 {self.embeddings_matrix.shape[1]}，与当前云端模型 text-embedding-v4 要求的 1024 维度不符，即将自动重新构建完整索引...")
+                # 检查向量维度是否与当前的本地模型 (512维) 匹配
+                if self.embeddings_matrix is not None and self.embeddings_matrix.shape[1] != EMBED_DIM:
+                    logger.warning(f"检测到缓存的向量维度为 {self.embeddings_matrix.shape[1]}，与当前模型 {LOCAL_EMBED_MODEL} 要求的 {EMBED_DIM} 维度不符，即将自动重新构建完整索引...")
                     self.build_index()
                     return
                 
@@ -238,7 +229,7 @@ class LocalVectorStore:
     # ====================================================================
     # 混合检索核心：向量 + BM25 双通道融合排序
     # ====================================================================
-    def search(self, query: str, top_k: int = 8) -> List[Dict[str, Any]]:
+    def search(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
         """
         混合检索核心 (Hybrid Search = 向量语义检索 + BM25 关键词检索)。
         

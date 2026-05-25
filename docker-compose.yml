@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  rag-customer-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-service-container
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - KAFU_API_TOKEN=sk_customer_20260304
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-sk-c3cc13b82c0745b5adef7220aeec18c4}
+    restart: always

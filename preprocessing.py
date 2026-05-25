@@ -26,10 +26,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class KBPreprocessor:
-    def __init__(self, workspace_dir: str = "d:\\Desktop\\数据"):
+    def __init__(self, workspace_dir: str = None):
         """
         初始化预处理器，设置工作区和知识库路径。
         """
+        if workspace_dir is None:
+            # 智能识别路径：优先在当前项目目录及父目录中寻找 KownledgeBase
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            if os.path.exists(os.path.join(current_dir, "KownledgeBase")):
+                workspace_dir = current_dir
+            elif os.path.exists(os.path.join(os.path.dirname(current_dir), "KownledgeBase")):
+                workspace_dir = os.path.dirname(current_dir)
+            else:
+                workspace_dir = "d:\\Desktop\\数据"
+
         self.workspace_dir = workspace_dir
         self.kb_dir = os.path.join(workspace_dir, "KownledgeBase")
         self.manuals_dir = os.path.join(self.kb_dir, "手册")
@@ -169,8 +179,8 @@ class KBPreprocessor:
             return []
 
         chunks = []
-        MAX_CHUNK_LEN = 800  # 每个块的最大字符长度
-        OVERLAP_LEN = 150    # 长句切分时的重叠字数
+        MAX_CHUNK_LEN = 1000  # 每个块的最大字符长度
+        OVERLAP_LEN = 200    # 长句切分时的重叠字数
 
         def save_chunk(text_lines: List[str], section_title: str, sub_manual_idx: int):
             """内部辅助函数：生成并保存切片"""
@@ -257,13 +267,18 @@ class KBPreprocessor:
                     current_len += len(line)
                     
                     # 如果当前块字数超限，进行截断切分，并保留重叠行
+                    # 但如果当前行含IMAGE标记，先加入当前chunk再切分，避免图文分离
                     if current_len >= MAX_CHUNK_LEN:
                         save_chunk(current_chunk_lines, current_title, idx)
-                        # 保留最后几行作为重叠部分
+                        # 保留最后几行作为重叠部分，确保含IMAGE标记的行不丢失
                         overlap_lines = []
                         overlap_len = 0
                         for rev_line in reversed(current_chunk_lines):
-                            if overlap_len + len(rev_line) < OVERLAP_LEN:
+                            should_include = overlap_len + len(rev_line) < OVERLAP_LEN
+                            # 含IMAGE标记的行始终保留到重叠区
+                            if "[IMAGE:" in rev_line:
+                                should_include = True
+                            if should_include:
                                 overlap_lines.insert(0, rev_line)
                                 overlap_len += len(rev_line)
                             else:

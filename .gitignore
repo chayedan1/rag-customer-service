@@ -1,4 +1,26 @@
 __pycache__/
 *.pyc
 KownledgeBase/手册/插图/
-prepare_repo.py
+
+# Scratch / temporary scripts
+scratch_*.py
+scratch_*.txt
+_run_*.py
+
+# Backup files
+*_backup*.csv
+*_backup*.py
+
+# Submission variants (keep only submission.csv)
+submission_in_progress*.csv
+submission_clean.csv
+submission_example.csv
+submission_gbk*.csv
+submission_utf8_sig*.csv
+
+# Claude Code
+.claude/
+
+# Data too large for git
+vector_index.pkl
+knowledge_processed.json

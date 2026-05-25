@@ -1,0 +1,13 @@
+.git
+.claude
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+*.csv
+!question_public.csv
+!submission_example.csv
+*_backup*
+scratch_*
+_run_*

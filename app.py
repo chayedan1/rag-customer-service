@@ -759,13 +759,22 @@ async def serve_dashboard():
     </body>
     </html>
     """
-    model_prefix = "DeepSeek" if "deepseek" in CHAT_MODEL.lower() else "阿里云"
+    if "mimo" in CHAT_MODEL.lower():
+        model_prefix = "小米"
+    elif "deepseek" in CHAT_MODEL.lower():
+        model_prefix = "DeepSeek"
+    else:
+        model_prefix = "阿里云"
+        
     model_label = f"Ollama {CHAT_MODEL}" if USE_LOCAL_MODEL else f"{model_prefix} {CHAT_MODEL}"
     mode_label = "本地离线" if USE_LOCAL_MODEL else "云端 API"
     mode_style = "border-color: #10b981; color: #34d399; background: rgba(16, 185, 129, 0.1);" if USE_LOCAL_MODEL else "border-color: #3b82f6; color: #60a5fa; background: rgba(59, 130, 246, 0.1);"
     privacy_text = "全部模型均在本地 Ollama 运行，零费用、零延迟、完全隐私。" if USE_LOCAL_MODEL else f"检索向量采用阿里云，问答推理基于 {model_prefix} 安全运行，提供企业级加密隐私保护。"
 
     dynamic_html = html_content.replace(
+        '<span class="badge">DeepSeek deepseek-v4-flash</span>',
+        f'<span class="badge">{model_label}</span>'
+    ).replace(
         '<span class="badge">阿里云 qwen3.5-omni</span>',
         f'<span class="badge">{model_label}</span>'
     ).replace(

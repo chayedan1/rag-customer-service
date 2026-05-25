@@ -9,4 +9,7 @@ pillow>=9.5.0
 requests>=2.31.0
 aiofiles>=23.1.0
 rank-bm25>=0.2.2
+jieba>=0.42.1
+sentence-transformers>=2.2.0
+
 
